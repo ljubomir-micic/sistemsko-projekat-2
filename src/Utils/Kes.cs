@@ -5,15 +5,14 @@ namespace Projekat
     public class Kes {
         // filename originala i sama obradjena slika
         public readonly int ObjLimit = 100;
-        private int LastEntered = 0;
-        private List<string> ListOfLinks = [];
+        private List<string> ListOfLinks = new List<string>();
         public readonly ConcurrentDictionary<string, Slika> kes = new ConcurrentDictionary<string, Slika>();
         public object _lock = new object();
 
-        // public Kes()
-        // {
+        public Kes()
+        {
             
-        // }
+        }
 
         public void DodajStavku(string link, Slika slika)
         {
@@ -31,10 +30,10 @@ namespace Projekat
                     if(kes.TryRemove(ListOfLinks.First(), out _))
                     {
                         if(kes.TryAdd(link, slika))
-                            Console.WriteLine("The image has been successfully added" + '\n');
+                            Console.WriteLine("Slika uspesno dodata.");
                     }
                     else {
-                        System.Console.WriteLine("There is problem with freeing the space in cash...");
+                        System.Console.WriteLine("Doslo je do problema pri oslobadjanju prostora u kesu.");
                     }
                 }
             }

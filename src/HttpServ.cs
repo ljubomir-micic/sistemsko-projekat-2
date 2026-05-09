@@ -20,7 +20,7 @@ namespace Projekat
 
             Thread graceful = new Thread(() =>
             {
-                Console.WriteLine("The graceful shutdown key is 'q'.");
+                Console.WriteLine("Za graceful shutdown pritisnite taster 'q'.");
                 while (listener.IsListening)
                 {
                     if (Console.KeyAvailable)
@@ -33,7 +33,7 @@ namespace Projekat
                         }
                         else
                         {
-                            Console.WriteLine("Wrong key... The graceful shutdown key is 'q'.");
+                            Console.WriteLine("Nepoznat unos.");
                         }
                     }
                     else
@@ -68,7 +68,15 @@ namespace Projekat
             if (string.IsNullOrEmpty(query))
             {
                 // DONE: Vrati prazan HTML sa Error 400 Bad Request
+                string respStr = "<html><body><h1>Error 400: Bad Request!</h1><form id=\"forma\"><input type=\"text\" id=\"unos\" placeholder=\"ime slike\"><button id=\"search\">pretraga</button></form></body><script>document.getElementById('forma').onsubmit = (e) => { e.preventDefault(); const val = document.getElementById('unos').value; if (val) { window.location.href = '/' + encodeURIComponent(val); }};</script></html>";
+                context.Response.ContentType = "text/html";
                 context.Response.StatusCode = (int) HttpStatusCode.BadRequest;
+                byte[] buff = Encoding.UTF8.GetBytes(respStr);
+                context.Response.ContentLength64 = buff.Length;
+                context.Response.OutputStream.Write(buff, 0, buff.Length);
+                context.Response.OutputStream.Close();
+                // context.Response.ContentLength64 = 0;
+                context.Response.Close();
                 return;
             }
 
@@ -90,6 +98,7 @@ namespace Projekat
                     context.Response.OutputStream.Close();
                     // context.Response.ContentLength64 = 0;
                     context.Response.Close();
+                    Console.WriteLine($"Slika {query} nije pronadjena.");
                     return;
                 }
 
@@ -105,7 +114,7 @@ namespace Projekat
             context.Response.OutputStream.Write(buffer, 0, buffer.Length);
             context.Response.OutputStream.Close();
             context.Response.Close();
-            Console.WriteLine("Zahtev je uspesno obradjen i rezultat je vracen!");
+            Console.WriteLine("Zahtev je uspesno obradjen!");
         }
     }
 }

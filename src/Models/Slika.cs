@@ -25,18 +25,11 @@ namespace Projekat
             Slika? slika = null;
             try
             {
-                string srcFolder = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
-                // string srcFolder = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
-                string inputPath = Path.IsPathRooted(path) ? path : Path.Combine(srcFolder, path);
-                if (!File.Exists(inputPath))
+                string inputPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", path));
+                if (!File.Exists(inputPath) || string.IsNullOrEmpty(path))
                     return null;
 
                 byte[] slikaPolja = File.ReadAllBytes(inputPath);
-                string outputFolder = Path.Combine(srcFolder, "GrayscaleImages");
-                // string outputFolder = Path.Combine(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..")), "GrayscaleImages");
-                Directory.CreateDirectory(outputFolder);
-                string outputFileName = Path.ChangeExtension(Path.GetFileName(path), ".jpg");
-                string outputPath = Path.Combine(outputFolder, outputFileName);
 
                 using (var image = Image.Load(slikaPolja))
                 {
@@ -47,8 +40,6 @@ namespace Projekat
                         image.SaveAsJpeg(ms);
                         slika = new Slika(ms.ToArray());
                     }
-
-                    image.SaveAsJpeg(outputPath);
                 }
             }
             catch (Exception)
