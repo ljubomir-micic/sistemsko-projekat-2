@@ -45,8 +45,10 @@ namespace Projekat
             {
                 if (kes.ContainsKey(link))
                 {
+                    Console.WriteLine("Kes pogodak.");
                     return kes[link];
                 }
+                Console.WriteLine("Kes promasaj.");
                 return null;
             }
         }
