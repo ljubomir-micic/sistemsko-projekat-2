@@ -114,7 +114,7 @@ namespace Projekat
             context.Response.OutputStream.Write(buffer, 0, buffer.Length);
             context.Response.OutputStream.Close();
             context.Response.Close();
-            Console.WriteLine("Zahtev je uspesno obradjen!");
+            Console.WriteLine("Zahtev je uspesno obradjen! [memory: "+Program.kes.Count+"/"+Program.kes.LimitUBajtovima+"]");
         }
     }
 }

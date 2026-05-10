@@ -20,6 +20,8 @@ namespace Projekat
             return data;
         }
 
+        public long VelicinaUBajtovima { get => data.Length; }
+
         public static Slika? ObradiSliku(string path)
         {
             Slika? slika = null;

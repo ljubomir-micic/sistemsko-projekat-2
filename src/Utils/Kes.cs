@@ -4,8 +4,7 @@ namespace Projekat
 {
     public class Kes {
         // filename originala i sama obradjena slika
-        public readonly int ObjLimit = 100;
-        private List<string> ListOfLinks = new List<string>();
+        public readonly long LimitUBajtovima = 3461760;
         public readonly ConcurrentDictionary<string, Slika> kes = new ConcurrentDictionary<string, Slika>();
         public object _lock = new object();
 
@@ -14,28 +13,36 @@ namespace Projekat
             
         }
 
+        public long Count {
+            get {
+                long e = 0;
+                foreach(var Kljuc in kes.Keys)
+                    e += kes[Kljuc].VelicinaUBajtovima;
+                return e;
+            }
+        }
+
+        public string? KljucNajveceSlikeMemorisaneUKesMemoriji {
+            get {
+                if (kes.IsEmpty) return null;
+                return kes.MaxBy(x => x.Value.VelicinaUBajtovima).Key;
+            }
+        }
+
         public void DodajStavku(string link, Slika slika)
         {
             lock (_lock)
-            {   
-                if(!ListOfLinks.Contains(link))
-                    ListOfLinks.Add(link);
-
-                if(kes.Count < ObjLimit)
-                {
-                    kes[link] = slika;
+            {
+                while (this.Count + slika.VelicinaUBajtovima > LimitUBajtovima) {
+                    string? kljucZaBrisanje = this.KljucNajveceSlikeMemorisaneUKesMemoriji;
+                    
+                    if (kljucZaBrisanje != null)
+                        kes.TryRemove(kljucZaBrisanje, out _);
+                    else
+                        break;
                 }
-                else
-                {
-                    if(kes.TryRemove(ListOfLinks.First(), out _))
-                    {
-                        if(kes.TryAdd(link, slika))
-                            Console.WriteLine("Slika uspesno dodata.");
-                    }
-                    else {
-                        System.Console.WriteLine("Doslo je do problema pri oslobadjanju prostora u kesu.");
-                    }
-                }
+                
+                kes[link] = slika;
             }
         }
 
