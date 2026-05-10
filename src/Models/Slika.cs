@@ -25,7 +25,7 @@ namespace Projekat
             Slika? slika = null;
             try
             {
-                string inputPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", path));
+                string inputPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, path));
                 if (!File.Exists(inputPath) || string.IsNullOrEmpty(path))
                     return null;
 
