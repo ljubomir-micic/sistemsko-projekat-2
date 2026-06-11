@@ -1,7 +1,8 @@
 ﻿using System;
 using System.Net;
-using System.Security.Cryptography;
+using System.Collections.Concurrent;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Text;
 using System.IO;
 
@@ -9,6 +10,9 @@ namespace Projekat
 {
     class HttpServ {
         public static HttpClient client = new HttpClient();
+        private static BlockingCollection<HttpListenerContext> redZahteva = new BlockingCollection<HttpListenerContext>();
+        private static ConcurrentDictionary<string, Task<Slika?>> obradeUToku = new ConcurrentDictionary<string, Task<Slika?>>();
+        private static SemaphoreSlim semaforKonverzije = new SemaphoreSlim(4, 4);
 
         public static void StartServ()
         {
@@ -31,38 +35,43 @@ namespace Projekat
                             listener.Stop();
                             break;
                         }
-                        else
-                        {
-                            Console.WriteLine("Nepoznat unos.");
-                        }
                     }
-                    else
-                    {
-                        Thread.Sleep(50);
-                    }
+                    else { Thread.Sleep(50); }
                 }
             });
             graceful.Start();
 
-            while (true)
+            Thread listenerThread = new Thread(() =>
             {
-                try
+                while (listener.IsListening)
                 {
-                    HttpListenerContext context = listener.GetContext();
-                    ThreadPool.QueueUserWorkItem(new WaitCallback(HttpServ.ObradaZahteva!), context);
+                    try
+                    {
+                        HttpListenerContext context = listener.GetContext();
+                        redZahteva.Add(context);
+                    }
+                    catch (Exception) { break; }
                 }
-                catch (Exception)
-                {
-                    break;
-                }
-            }
+                redZahteva.CompleteAdding();
+            });
+            listenerThread.IsBackground = true;
+            listenerThread.Start();
+
+            Task.Factory.StartNew(ProcesirajRedZahteva, TaskCreationOptions.LongRunning);
 
             graceful.Join();
         }
 
-        public static void ObradaZahteva(object state)
+        private static async Task ProcesirajRedZahteva()
         {
-            HttpListenerContext context = (HttpListenerContext) state;
+            foreach (var context in redZahteva.GetConsumingEnumerable())
+            {
+                _ = ObradaZahtevaAsync(context);
+            }
+        }
+
+        public static async Task ObradaZahtevaAsync(HttpListenerContext context)
+        {
             string query = context.Request.RawUrl!.Substring(1);
 
             if (string.IsNullOrEmpty(query))
@@ -73,7 +82,8 @@ namespace Projekat
                 context.Response.StatusCode = (int) HttpStatusCode.BadRequest;
                 byte[] buff = Encoding.UTF8.GetBytes(respStr);
                 context.Response.ContentLength64 = buff.Length;
-                context.Response.OutputStream.Write(buff, 0, buff.Length);
+                
+                await context.Response.OutputStream.WriteAsync(buff, 0, buff.Length);
                 context.Response.OutputStream.Close();
                 // context.Response.ContentLength64 = 0;
                 context.Response.Close();
@@ -83,10 +93,34 @@ namespace Projekat
             Slika? slika = Program.kes[query];
             if (slika == null)
             {
-                // DONE: Pronadji sliku iz file sistema, obradi je i smesti u kes
-                slika = Slika.ObradiSliku(query);
+                // Nit koja prva stigne kreira Task, sve ostale niti za istu sliku dobijaju referencu na taj isti Task.
+                Task<Slika?> obradaTask = obradeUToku.GetOrAdd(query, async (kljuc) =>
+                {
+                    await semaforKonverzije.WaitAsync();
+                    try
+                    {
+                        return await Task.Run(() => Slika.ObradiSliku(kljuc));
+                    }
+                    finally
+                    {
+                        semaforKonverzije.Release();
+                    }
+                });
 
-                // DONE: Ako slika ne postoji, vrati prazan HTML sa Error 404 Not Found => RESENO
+                _ = obradaTask.ContinueWith(t =>
+                {
+                    if (t.IsFaulted)
+                        Console.WriteLine($"[LOG] Greška pri obradi slike {query}.");
+                    else if (t.Result == null)
+                        Console.WriteLine($"[LOG] Konverzija neuspešna - slika {query} ne postoji na disku.");
+                    else
+                        Console.WriteLine($"[LOG] Konverzija uspešno završena za {query}.");
+                    
+                    obradeUToku.TryRemove(query, out _);
+                }, TaskContinuationOptions.ExecuteSynchronously);
+
+                slika = await obradaTask;
+
                 if (slika == null)
                 {
                     string respStr = $"<html><body><h1>Error 404: Item not found!</h1></body></html>";
@@ -94,7 +128,7 @@ namespace Projekat
                     context.Response.StatusCode = (int) HttpStatusCode.NotFound;
                     byte[] buff = Encoding.UTF8.GetBytes(respStr);
                     context.Response.ContentLength64 = buff.Length;
-                    context.Response.OutputStream.Write(buff, 0, buff.Length);
+                    await context.Response.OutputStream.WriteAsync(buff, 0, buff.Length);
                     context.Response.OutputStream.Close();
                     // context.Response.ContentLength64 = 0;
                     context.Response.Close();
@@ -111,7 +145,8 @@ namespace Projekat
             context.Response.StatusCode = (int) HttpStatusCode.OK;
             byte[] buffer = Encoding.UTF8.GetBytes(responseStirng);
             context.Response.ContentLength64 = buffer.Length;
-            context.Response.OutputStream.Write(buffer, 0, buffer.Length);
+            
+            await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
             context.Response.OutputStream.Close();
             context.Response.Close();
             Console.WriteLine("Zahtev je uspesno obradjen! [memory: "+Program.kes.Count+"/"+Program.kes.LimitUBajtovima+"]");

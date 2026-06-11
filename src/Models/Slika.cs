@@ -28,6 +28,7 @@ namespace Projekat
             try
             {
                 string inputPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, path));
+                // Console.WriteLine(inputPath); // podsetnik: imgs moraju da postoje u sistemsko-projekat-2/src/bin/Debug/net?.0/...
                 if (!File.Exists(inputPath) || string.IsNullOrEmpty(path))
                     return null;
 
