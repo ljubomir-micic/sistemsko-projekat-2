@@ -24,12 +24,15 @@ namespace Projekat
 
         public static Slika? ObradiSliku(string path)
         {
+            if(string.IsNullOrEmpty(path)) return null;
+            
             Slika? slika = null;
             try
             {
-                string inputPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, path));
-                // Console.WriteLine(inputPath); // podsetnik: imgs moraju da postoje u sistemsko-projekat-2/src/bin/Debug/net?.0/...
-                if (!File.Exists(inputPath) || string.IsNullOrEmpty(path))
+                string inputPath = Path.GetFullPath(Path.Combine(Podesavanja.direktorijumSlika, path));
+
+                // Osigurava da je putanja stvarno unutar imgs/ direktorijuma
+                if (!inputPath.StartsWith(Podesavanja.direktorijumSlika))
                     return null;
 
                 byte[] slikaPolja = File.ReadAllBytes(inputPath);

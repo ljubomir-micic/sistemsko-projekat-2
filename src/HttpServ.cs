@@ -13,18 +13,25 @@ namespace Projekat
         private static BlockingCollection<HttpListenerContext> redZahteva = new BlockingCollection<HttpListenerContext>();
         private static ConcurrentDictionary<string, Task<Slika?>> obradeUToku = new ConcurrentDictionary<string, Task<Slika?>>();
         private static SemaphoreSlim semaforKonverzije = new SemaphoreSlim(4, 4);
-
+        private static readonly object _logLock = new object();
+        private static void Log(string poruka)
+        {
+            lock (_logLock)
+            {
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] {poruka}");
+            }
+        }
         public static void StartServ()
         {
             HttpListener listener = new HttpListener();
             listener.Prefixes.Add($"http://localhost:{Podesavanja.brojPorta}/");
             listener.Start();
-            Console.WriteLine("Server je pokrenut");
-            Console.WriteLine($"http://localhost:{Podesavanja.brojPorta}/");
+            Log("Server je pokrenut");
+            Log($"http://localhost:{Podesavanja.brojPorta}/");
 
             Thread graceful = new Thread(() =>
             {
-                Console.WriteLine("Za graceful shutdown pritisnite taster 'q'.");
+                Log("Za graceful shutdown pritisnite taster 'q'.");
                 while (listener.IsListening)
                 {
                     if (Console.KeyAvailable)
@@ -62,12 +69,16 @@ namespace Projekat
             graceful.Join();
         }
 
-        private static async Task ProcesirajRedZahteva()
+        private static Task ProcesirajRedZahteva()
         {
             foreach (var context in redZahteva.GetConsumingEnumerable())
             {
-                _ = ObradaZahtevaAsync(context);
+                _ = ObradaZahtevaAsync(context).ContinueWith(t =>
+                    Log($"[LOG] Neočekivana greška: {t.Exception}"),
+                    TaskContinuationOptions.OnlyOnFaulted
+                );
             }
+            return Task.CompletedTask;
         }
 
         public static async Task ObradaZahtevaAsync(HttpListenerContext context)
@@ -99,24 +110,26 @@ namespace Projekat
                     await semaforKonverzije.WaitAsync();
                     try
                     {
-                        return await Task.Run(() => Slika.ObradiSliku(kljuc));
+                        Slika? rezultat = await Task.Run(() => Slika.ObradiSliku(kljuc));
+                        if (rezultat != null)
+                            Program.kes.DodajStavku(kljuc, rezultat); // <-- upis PRE uklanjanja
+                        return rezultat;
                     }
                     finally
                     {
                         semaforKonverzije.Release();
+                        obradeUToku.TryRemove(kljuc, out _); // <-- uklanjanje NAKON upisa
                     }
                 });
 
                 _ = obradaTask.ContinueWith(t =>
                 {
                     if (t.IsFaulted)
-                        Console.WriteLine($"[LOG] Greška pri obradi slike {query}.");
+                        Log($"[LOG] Greška pri obradi slike {query}.");
                     else if (t.Result == null)
-                        Console.WriteLine($"[LOG] Konverzija neuspešna - slika {query} ne postoji na disku.");
+                        Log($"[LOG] Konverzija neuspešna - slika {query} ne postoji na disku.");
                     else
-                        Console.WriteLine($"[LOG] Konverzija uspešno završena za {query}.");
-                    
-                    obradeUToku.TryRemove(query, out _);
+                        Log($"[LOG] Konverzija uspešno završena za {query}.");
                 }, TaskContinuationOptions.ExecuteSynchronously);
 
                 slika = await obradaTask;
@@ -132,12 +145,12 @@ namespace Projekat
                     context.Response.OutputStream.Close();
                     // context.Response.ContentLength64 = 0;
                     context.Response.Close();
-                    Console.WriteLine($"Slika {query} nije pronadjena.");
+                    Log($"Slika {query} nije pronadjena.");
                     return;
                 }
 
-                Program.kes.DodajStavku(query, slika); // Proveriti da li je kes pun i obrisati stavku ako jeste koristeci
-                                            // ogranicenje velicine
+                // Program.kes.DodajStavku(query, slika); // Proveriti da li je kes pun i obrisati stavku ako jeste koristeci
+                //                             // ogranicenje velicine
             }
 
             string responseStirng = $"<html><body><img src='data:image/jpeg;base64,{Convert.ToBase64String(slika.GetData())}' /></body></html>";
@@ -149,7 +162,7 @@ namespace Projekat
             await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
             context.Response.OutputStream.Close();
             context.Response.Close();
-            Console.WriteLine("Zahtev je uspesno obradjen! [memory: "+Program.kes.Count+"/"+Program.kes.LimitUBajtovima+"]");
+            Log("Zahtev je uspesno obradjen! [memory: "+Program.kes.Count+"/"+Program.kes.LimitUBajtovima+"]");
         }
     }
 }

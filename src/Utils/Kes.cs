@@ -1,30 +1,22 @@
-using System.Collections.Concurrent;
-
 namespace Projekat
 {
     public class Kes {
-        // filename originala i sama obradjena slika
-        public readonly long LimitUBajtovima = 3461760;
-        public readonly ConcurrentDictionary<string, Slika> kes = new ConcurrentDictionary<string, Slika>();
-        public object _lock = new object();
+        public long LimitUBajtovima => Podesavanja.limitKesaUBajtovima;
+        private readonly Dictionary<string, Slika> kes = new Dictionary<string, Slika>();
+        private readonly object _lock = new object();
 
         public Kes()
         {
             
         }
 
-        public long Count {
-            get {
-                long e = 0;
-                foreach(var Kljuc in kes.Keys)
-                    e += kes[Kljuc].VelicinaUBajtovima;
-                return e;
-            }
-        }
+        private long _trenutnaVelicina = 0;
 
-        public string? KljucNajveceSlikeMemorisaneUKesMemoriji {
+        public long Count => _trenutnaVelicina;
+
+        private string? KljucNajveceSlikeMemorisaneUKesMemoriji {
             get {
-                if (kes.IsEmpty) return null;
+                if (kes.Count == 0) return null;
                 return kes.MaxBy(x => x.Value.VelicinaUBajtovima).Key;
             }
         }
@@ -33,27 +25,33 @@ namespace Projekat
         {
             lock (_lock)
             {
-                while (this.Count + slika.VelicinaUBajtovima > LimitUBajtovima) {
+                while (_trenutnaVelicina + slika.VelicinaUBajtovima > LimitUBajtovima)
+                {
                     string? kljucZaBrisanje = this.KljucNajveceSlikeMemorisaneUKesMemoriji;
-                    
                     if (kljucZaBrisanje != null)
-                        kes.TryRemove(kljucZaBrisanje, out _);
-                    else
-                        break;
+                    {
+                        if (kes.Remove(kljucZaBrisanje, out Slika? obrisana))
+                            _trenutnaVelicina -= obrisana.VelicinaUBajtovima;
+                    }
+                    else break;
                 }
-                
-                kes[link] = slika;
+
+                if (!kes.ContainsKey(link))
+                {
+                    kes[link] = slika;
+                    _trenutnaVelicina += slika.VelicinaUBajtovima;
+                }
             }
         }
 
-        protected Slika? PronadjiStavku(string link)
+        private Slika? PronadjiStavku(string link)
         {
             lock (_lock)
             {
-                if (kes.ContainsKey(link))
+                if (kes.TryGetValue(link, out Slika? slika))
                 {
                     Console.WriteLine("Kes pogodak.");
-                    return kes[link];
+                    return slika;
                 }
                 Console.WriteLine("Kes promasaj.");
                 return null;
@@ -64,10 +62,8 @@ namespace Projekat
         {
             lock (_lock)
             {
-                if (kes.ContainsKey(link))
-                {
-                    kes.TryRemove(link, out _);
-                }
+                if (kes.Remove(link, out Slika? obrisana))
+                    _trenutnaVelicina -= obrisana.VelicinaUBajtovima;
             }
         }
     
