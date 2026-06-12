@@ -110,18 +110,18 @@ namespace Projekat
                     finally
                     {
                         semaforKonverzije.Release();
-                        obradeUToku.TryRemove(kljuc, out _); // <-- uklanjanje NAKON upisa
+                        obradeUToku.TryRemove(kljuc, out _);
                     }
                 });
 
                 _ = obradaTask.ContinueWith(t =>
                 {
                     if (t.IsFaulted)
-                        Logger.Log($"[Logger.Log] Greška pri obradi slike {query}.");
+                        Logger.Log($"[LOG] Greška pri obradi slike {query}.");
                     else if (t.Result == null)
-                        Logger.Log($"[Logger.Log] Konverzija neuspešna - slika {query} ne postoji na disku.");
+                        Logger.Log($"[LOG] Konverzija neuspešna - slika {query} ne postoji na disku.");
                     else
-                        Logger.Log($"[Logger.Log] Konverzija uspešno završena za {query}.");
+                        Logger.Log($"[LOG] Konverzija uspešno završena za {query}.");
                 }, TaskContinuationOptions.ExecuteSynchronously);
 
                 slika = await obradaTask;
