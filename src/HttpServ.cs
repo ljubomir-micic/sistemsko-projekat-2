@@ -9,29 +9,21 @@ using System.IO;
 namespace Projekat
 {
     class HttpServ {
-        public static HttpClient client = new HttpClient();
+        // public static HttpClient client = new HttpClient();
         private static BlockingCollection<HttpListenerContext> redZahteva = new BlockingCollection<HttpListenerContext>();
         private static ConcurrentDictionary<string, Task<Slika?>> obradeUToku = new ConcurrentDictionary<string, Task<Slika?>>();
         private static SemaphoreSlim semaforKonverzije = new SemaphoreSlim(4, 4);
-        private static readonly object _logLock = new object();
-        private static void Log(string poruka)
-        {
-            lock (_logLock)
-            {
-                Console.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] {poruka}");
-            }
-        }
         public static void StartServ()
         {
             HttpListener listener = new HttpListener();
             listener.Prefixes.Add($"http://localhost:{Podesavanja.brojPorta}/");
             listener.Start();
-            Log("Server je pokrenut");
-            Log($"http://localhost:{Podesavanja.brojPorta}/");
+            Logger.Log("Server je pokrenut");
+            Logger.Log($"http://localhost:{Podesavanja.brojPorta}/");
 
             Thread graceful = new Thread(() =>
             {
-                Log("Za graceful shutdown pritisnite taster 'q'.");
+                Logger.Log("Za graceful shutdown pritisnite taster 'q'.");
                 while (listener.IsListening)
                 {
                     if (Console.KeyAvailable)
@@ -74,7 +66,7 @@ namespace Projekat
             foreach (var context in redZahteva.GetConsumingEnumerable())
             {
                 _ = ObradaZahtevaAsync(context).ContinueWith(t =>
-                    Log($"[LOG] Neočekivana greška: {t.Exception}"),
+                    Logger.Log($"[Logger.Log] Neočekivana greška: {t.Exception}"),
                     TaskContinuationOptions.OnlyOnFaulted
                 );
             }
@@ -125,11 +117,11 @@ namespace Projekat
                 _ = obradaTask.ContinueWith(t =>
                 {
                     if (t.IsFaulted)
-                        Log($"[LOG] Greška pri obradi slike {query}.");
+                        Logger.Log($"[Logger.Log] Greška pri obradi slike {query}.");
                     else if (t.Result == null)
-                        Log($"[LOG] Konverzija neuspešna - slika {query} ne postoji na disku.");
+                        Logger.Log($"[Logger.Log] Konverzija neuspešna - slika {query} ne postoji na disku.");
                     else
-                        Log($"[LOG] Konverzija uspešno završena za {query}.");
+                        Logger.Log($"[Logger.Log] Konverzija uspešno završena za {query}.");
                 }, TaskContinuationOptions.ExecuteSynchronously);
 
                 slika = await obradaTask;
@@ -145,7 +137,7 @@ namespace Projekat
                     context.Response.OutputStream.Close();
                     // context.Response.ContentLength64 = 0;
                     context.Response.Close();
-                    Log($"Slika {query} nije pronadjena.");
+                    Logger.Log($"Slika {query} nije pronadjena.");
                     return;
                 }
 
@@ -162,7 +154,7 @@ namespace Projekat
             await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
             context.Response.OutputStream.Close();
             context.Response.Close();
-            Log("Zahtev je uspesno obradjen! [memory: "+Program.kes.Count+"/"+Program.kes.LimitUBajtovima+"]");
+            Logger.Log("Zahtev je uspesno obradjen! [memory: "+Program.kes.Count+"/"+Program.kes.LimitUBajtovima+"]");
         }
     }
 }
