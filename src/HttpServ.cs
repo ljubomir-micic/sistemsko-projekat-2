@@ -22,6 +22,7 @@ namespace Projekat
         private static readonly ConcurrentDictionary<string, Task<Slika?>> obradeUToku =
             new ConcurrentDictionary<string, Task<Slika?>>();
         private static readonly SemaphoreSlim semaforKonverzije = new SemaphoreSlim(4, 4);
+        private static readonly SemaphoreSlim semaforSafety = new SemaphoreSlim(100, 100); // ovo sam dodao: zabrana prevelikog broja zahteva u jednom trenutku i sprecavanje system panic aktivacije
 
         public static void StartServ()
         {
@@ -87,9 +88,14 @@ namespace Projekat
         {
             await foreach (var context in redZahteva.Reader.ReadAllAsync())
             {
-                _ = ObradaZahtevaAsync(context).ContinueWith(
-                    t => Logger.Log($"[Logger.Log] Neočekivana greška: {t.Exception}"),
-                    TaskContinuationOptions.OnlyOnFaulted
+                await semaforSafety.WaitAsync();
+                _ = ObradaZahtevaAsync(
+                    context
+                ).ContinueWith(
+                    t => {
+                        if (t.Status == TaskStatus.RanToCompletion) semaforSafety.Release();
+                        else Logger.Log($"[Logger.Log] Neočekivana greška: {t.Exception}");
+                    }
                 );
             }
         }
