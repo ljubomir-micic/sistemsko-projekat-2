@@ -19,12 +19,21 @@ namespace Projekat
                     SingleReader = true,
                     SingleWriter = false
                 });
+<<<<<<< HEAD
         private static readonly ConcurrentDictionary<string, Task<Slika?>> obradeUToku =
             new ConcurrentDictionary<string, Task<Slika?>>();
         private static readonly SemaphoreSlim semaforKonverzije = new SemaphoreSlim(4, 4);
         private static readonly SemaphoreSlim semaforSafety = new SemaphoreSlim(100, 100); // ovo sam dodao: zabrana prevelikog broja zahteva u jednom trenutku i sprecavanje system panic aktivacije
+=======
+>>>>>>> 2145152 (Izmenjena verzija, treba dodatno proveritigit add .!)
 
-        public static void StartServ()
+        private static readonly ConcurrentDictionary<string, Lazy<Task<Slika?>>> obradeUToku =
+            new ConcurrentDictionary<string, Lazy<Task<Slika?>>>();
+
+        private static readonly SemaphoreSlim semaforKonverzije = new SemaphoreSlim(4, 4);
+        private static readonly CancellationTokenSource _cts = new CancellationTokenSource();
+
+        public static async Task StartServ()
         {
             HttpListener listener = new HttpListener();
             listener.Prefixes.Add($"http://localhost:{Podesavanja.brojPorta}/");
@@ -32,32 +41,23 @@ namespace Projekat
             Logger.Log("Server je pokrenut");
             Logger.Log($"http://localhost:{Podesavanja.brojPorta}/");
 
-            Thread graceful = new Thread(() =>
+            Console.CancelKeyPress += (s, e) =>
             {
-                Logger.Log("Za graceful shutdown pritisnite taster 'q'.");
-                while (listener.IsListening)
-                {
-                    if (Console.KeyAvailable)
-                    {
-                        var key = Console.ReadKey(intercept: true);
-                        if (key.Key == ConsoleKey.Q)
-                        {
-                            listener.Stop();
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        Thread.Sleep(50);
-                    }
-                }
-            });
-            graceful.Start();
+                e.Cancel = true;
+                Logger.Log("Ctrl+C detektovan -> pokretanje graceful shutdown-a...");
+                _cts.Cancel();
+            };
 
+<<<<<<< HEAD
             _ = Task.Run(async () =>
+=======
+            Thread kTasterListener = new Thread(() =>
+>>>>>>> 2145152 (Izmenjena verzija, treba dodatno proveritigit add .!)
             {
-                while (listener.IsListening)
+                Logger.Log("Za graceful shutdown pritisnite 'q'.");
+                while (!_cts.Token.IsCancellationRequested)
                 {
+<<<<<<< HEAD
                     HttpListenerContext? context = null;
                     
                     try
@@ -73,20 +73,77 @@ namespace Projekat
                             context.Response.ContentLength64 = 0;
                             context.Response.Close();
                         }
+=======
+                    if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Q)
+                    {
+                        Logger.Log("Taster 'q' detektovan - pokretanje graceful shutdown-a...");
+                        _cts.Cancel();
+>>>>>>> 2145152 (Izmenjena verzija, treba dodatno proveritigit add .!)
                         break;
                     }
+                    Thread.Sleep(50);
                 }
+<<<<<<< HEAD
                 redZahteva.Writer.Complete();
             });
+=======
+            })
+            {
+                IsBackground = true,
+                Name = "ShutdownKeyListener"
+            };
+            kTasterListener.Start();
+>>>>>>> 2145152 (Izmenjena verzija, treba dodatno proveritigit add .!)
 
-            _ = ProcesirajRedZahteva();
+            var listenerTask = ListenerLoop(listener, _cts.Token);
+            var dispatcherTask = ProcesirajRedZahteva(_cts.Token);
 
-            graceful.Join();
+            await Task.WhenAll(listenerTask, dispatcherTask);
+
+            listener.Close();
+            Logger.Log("Server zaustavljen");
         }
 
+<<<<<<< HEAD
         private static async Task ProcesirajRedZahteva()
+=======
+        private static async Task ListenerLoop(HttpListener listener, CancellationToken ct)
+>>>>>>> 2145152 (Izmenjena verzija, treba dodatno proveritigit add .!)
         {
-            await foreach (var context in redZahteva.Reader.ReadAllAsync())
+            Logger.Log("Listener task pokrenut.");
+
+            using var registracija = ct.Register(() =>
+            {
+                try { listener.Stop(); } catch (ObjectDisposedException) { }
+            });
+
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    HttpListenerContext context = await listener.GetContextAsync();
+                    Logger.Log("Nova konekcija primljena");
+                    await redZahteva.Writer.WriteAsync(context, ct);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (HttpListenerException)
+            {
+            }
+            finally
+            {
+                redZahteva.Writer.Complete();
+                Logger.Log("Listener task zavrsen");
+            }
+        }
+
+        private static async Task ProcesirajRedZahteva(CancellationToken ct)
+        {
+            Logger.Log("Dispatcher task pokrenut.");
+
+            await foreach (var context in redZahteva.Reader.ReadAllAsync(ct))
             {
                 await semaforSafety.WaitAsync();
                 _ = ObradaZahtevaAsync(
@@ -134,25 +191,10 @@ namespace Projekat
 
             if (slika == null)
             {
-                Task<Slika?> obradaTask = obradeUToku.GetOrAdd(query, async (kljuc) =>
-                {
-                    await semaforKonverzije.WaitAsync();
-                    try
-                    {
-                        Slika? rezultat = await Task.Run(() => Slika.ObradiSliku(kljuc));
+                Lazy<Task<Slika?>> lazyObrada = obradeUToku.GetOrAdd(query, kljuc =>
+                    new Lazy<Task<Slika?>>(() => ObradiSlikuAsinhrono(kljuc)));
 
-                        if (rezultat != null)
-                            Program.kes.DodajStavku(kljuc, rezultat);
-
-                        return rezultat;
-                    }
-                    finally
-                    {
-                        semaforKonverzije.Release();
-
-                        obradeUToku.TryRemove(kljuc, out _);
-                    }
-                });
+                Task<Slika?> obradaTask = lazyObrada.Value;
 
                 _ = obradaTask.ContinueWith(t =>
                 {
@@ -164,7 +206,14 @@ namespace Projekat
                         Logger.Log($"[LOG] Konverzija uspešno završena za '{query}'.");
                 }, TaskContinuationOptions.ExecuteSynchronously);
 
-                slika = await obradaTask;
+                try
+                {
+                    slika = await obradaTask;
+                }
+                finally
+                {
+                    obradeUToku.TryRemove(query, out _);
+                }
 
                 if (slika == null)
                 {
@@ -194,6 +243,24 @@ namespace Projekat
             context.Response.Close();
 
             Logger.Log($"Zahtev uspešno obrađen! [memorija: {Program.kes.Count}/{Program.kes.LimitUBajtovima}]");
+        }
+
+        private static async Task<Slika?> ObradiSlikuAsinhrono(string kljuc)
+        {
+            await semaforKonverzije.WaitAsync();
+            try
+            {
+                Slika? rezultat = await Task.Run(() => Slika.ObradiSliku(kljuc));
+
+                if (rezultat != null)
+                    Program.kes.DodajStavku(kljuc, rezultat);
+
+                return rezultat;
+            }
+            finally
+            {
+                semaforKonverzije.Release();
+            }
         }
     }
 }

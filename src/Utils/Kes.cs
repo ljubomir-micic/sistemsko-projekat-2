@@ -25,6 +25,9 @@ namespace Projekat
         {
             lock (_lock)
             {
+                if (kes.ContainsKey(link))
+                    return;
+
                 while (_trenutnaVelicina + slika.VelicinaUBajtovima > LimitUBajtovima)
                 {
                     string? kljucZaBrisanje = this.KljucNajveceSlikeMemorisaneUKesMemoriji;
@@ -36,11 +39,8 @@ namespace Projekat
                     else break;
                 }
 
-                if (!kes.ContainsKey(link))
-                {
-                    kes[link] = slika;
-                    _trenutnaVelicina += slika.VelicinaUBajtovima;
-                }
+                kes[link] = slika;
+                _trenutnaVelicina += slika.VelicinaUBajtovima;
             }
         }
 
@@ -50,10 +50,10 @@ namespace Projekat
             {
                 if (kes.TryGetValue(link, out Slika? slika))
                 {
-                    Console.WriteLine("Kes pogodak.");
+                    Logger.Log("Kes pogodak.");
                     return slika;
                 }
-                Console.WriteLine("Kes promasaj.");
+                Logger.Log("Kes promasaj.");
                 return null;
             }
         }
