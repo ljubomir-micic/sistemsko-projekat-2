@@ -19,14 +19,6 @@ namespace Projekat
                     SingleReader = true,
                     SingleWriter = false
                 });
-<<<<<<< HEAD
-        private static readonly ConcurrentDictionary<string, Task<Slika?>> obradeUToku =
-            new ConcurrentDictionary<string, Task<Slika?>>();
-        private static readonly SemaphoreSlim semaforKonverzije = new SemaphoreSlim(4, 4);
-        private static readonly SemaphoreSlim semaforSafety = new SemaphoreSlim(100, 100); // ovo sam dodao: zabrana prevelikog broja zahteva u jednom trenutku i sprecavanje system panic aktivacije
-=======
->>>>>>> 2145152 (Izmenjena verzija, treba dodatno proveritigit add .!)
-
         private static readonly ConcurrentDictionary<string, Lazy<Task<Slika?>>> obradeUToku =
             new ConcurrentDictionary<string, Lazy<Task<Slika?>>>();
 
@@ -47,53 +39,25 @@ namespace Projekat
                 Logger.Log("Ctrl+C detektovan -> pokretanje graceful shutdown-a...");
                 _cts.Cancel();
             };
-
-<<<<<<< HEAD
-            _ = Task.Run(async () =>
-=======
             Thread kTasterListener = new Thread(() =>
->>>>>>> 2145152 (Izmenjena verzija, treba dodatno proveritigit add .!)
             {
                 Logger.Log("Za graceful shutdown pritisnite 'q'.");
                 while (!_cts.Token.IsCancellationRequested)
                 {
-<<<<<<< HEAD
-                    HttpListenerContext? context = null;
-                    
-                    try
-                    {
-                        context = await listener.GetContextAsync();
-                        await redZahteva.Writer.WriteAsync(context);
-                    }
-                    catch (Exception)
-                    {
-                        if (context != null) {
-                            Logger.Log("[WARN] Red zahteva je pun — zahtev odbijen (503).");
-                            context.Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
-                            context.Response.ContentLength64 = 0;
-                            context.Response.Close();
-                        }
-=======
                     if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Q)
                     {
                         Logger.Log("Taster 'q' detektovan - pokretanje graceful shutdown-a...");
                         _cts.Cancel();
->>>>>>> 2145152 (Izmenjena verzija, treba dodatno proveritigit add .!)
                         break;
                     }
                     Thread.Sleep(50);
                 }
-<<<<<<< HEAD
-                redZahteva.Writer.Complete();
-            });
-=======
             })
             {
                 IsBackground = true,
                 Name = "ShutdownKeyListener"
             };
             kTasterListener.Start();
->>>>>>> 2145152 (Izmenjena verzija, treba dodatno proveritigit add .!)
 
             var listenerTask = ListenerLoop(listener, _cts.Token);
             var dispatcherTask = ProcesirajRedZahteva(_cts.Token);
@@ -104,11 +68,7 @@ namespace Projekat
             Logger.Log("Server zaustavljen");
         }
 
-<<<<<<< HEAD
-        private static async Task ProcesirajRedZahteva()
-=======
         private static async Task ListenerLoop(HttpListener listener, CancellationToken ct)
->>>>>>> 2145152 (Izmenjena verzija, treba dodatno proveritigit add .!)
         {
             Logger.Log("Listener task pokrenut.");
 
@@ -131,6 +91,8 @@ namespace Projekat
             }
             catch (HttpListenerException)
             {
+                // Očekivano kada listener.Stop() prekine pending GetContextAsync poziv
+                // usled cancelacije.
             }
             finally
             {
@@ -145,14 +107,9 @@ namespace Projekat
 
             await foreach (var context in redZahteva.Reader.ReadAllAsync(ct))
             {
-                await semaforSafety.WaitAsync();
-                _ = ObradaZahtevaAsync(
-                    context
-                ).ContinueWith(
-                    t => {
-                        if (t.Status == TaskStatus.RanToCompletion) semaforSafety.Release();
-                        else Logger.Log($"[Logger.Log] Neočekivana greška: {t.Exception}");
-                    }
+                _ = ObradaZahtevaAsync(context).ContinueWith(
+                    t => Logger.Log($"[Logger.Log] Neočekivana greška: {t.Exception}"),
+                    TaskContinuationOptions.OnlyOnFaulted
                 );
             }
         }
