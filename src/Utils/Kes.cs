@@ -27,9 +27,9 @@ namespace Projekat
                 // Efikasna evikcija (FIFO/LRU princip)
                 while (_trenutnaVelicina > LimitUBajtovima)
                 {
-                    if (_redosledKljuceva.TryDequeue(out string stariLink))
+                    if (_redosledKljuceva.TryDequeue(out string? stariLink))
                     {
-                        if (_kes.TryRemove(stariLink, out Slika obrisana))
+                        if (_kes.TryRemove(stariLink, out Slika? obrisana))
                         {
                             Interlocked.Add(ref _trenutnaVelicina, -obrisana.VelicinaUBajtovima);
                         }
