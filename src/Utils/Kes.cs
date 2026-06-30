@@ -1,4 +1,5 @@
 using System.Threading;
+using System.Collections.Concurrent;
 
 namespace Projekat
 {
@@ -6,66 +7,40 @@ namespace Projekat
     {
         public long LimitUBajtovima => Podesavanja.limitKesaUBajtovima;
         
-        private readonly Dictionary<string, Slika> kes = new Dictionary<string, Slika>();
-        // ReaderWriterLockSlim - dozvoljava više čitača, jedan pisac
-        private readonly ReaderWriterLockSlim kesLock = new ReaderWriterLockSlim();
+        // PROMENA: ConcurrentDictionary umesto Dictionary + lock
+        private readonly ConcurrentDictionary<string, Slika> kes = new ConcurrentDictionary<string, Slika>();
         
         private long _trenutnaVelicina = 0;
+        private readonly object _lockVelicina = new object();
 
         public long Count => _trenutnaVelicina;
 
-        public Kes() { }
-
-        private string? KljucNajveceSlikeMemorisaneUKesMemoriji
-        {
-            get
-            {
-                kesLock.EnterReadLock();
-                try
-                {
-                    if (kes.Count == 0) return null;
-                    return kes.MaxBy(x => x.Value.VelicinaUBajtovima).Key;
-                }
-                finally
-                {
-                    kesLock.ExitReadLock();
-                }
-            }
-        }
-
         public void DodajStavku(string link, Slika slika)
         {
-            kesLock.EnterWriteLock();
-            try
-            {
-                // Ako već postoji, ne dodajemo ponovo
-                if (kes.ContainsKey(link))
-                {
-                    return;
-                }
+            // Prvo proverimo da li već postoji
+            if (kes.ContainsKey(link))
+                return;
 
-                // Brisanje dok ne bude dovoljno mesta
-                while (_trenutnaVelicina + slika.VelicinaUBajtovima > LimitUBajtovima)
+            // Dodajemo samo ako ima mesta
+            lock (_lockVelicina)
+            {
+                // Provera da li ima mesta
+                if (_trenutnaVelicina + slika.VelicinaUBajtovima > LimitUBajtovima)
                 {
-                    string? kljucZaBrisanje = KljucNajveceSlikeMemorisaneUKesMemoriji;
-                    if (kljucZaBrisanje != null && kes.Remove(kljucZaBrisanje, out Slika? obrisana))
+                    // Brišemo najveće slike dok ne bude mesta
+                    while (_trenutnaVelicina + slika.VelicinaUBajtovima > LimitUBajtovima)
                     {
+                        if (!kes.TryRemove(kes.MaxBy(x => x.Value.VelicinaUBajtovima).Key, out Slika? obrisana))
+                            break;
                         _trenutnaVelicina -= obrisana.VelicinaUBajtovima;
-                        Logger.Log($"[KES] Brisanje '{kljucZaBrisanje}' - {obrisana.VelicinaUBajtovima} B");
-                    }
-                    else
-                    {
-                        break;
                     }
                 }
 
-                kes[link] = slika;
-                _trenutnaVelicina += slika.VelicinaUBajtovima;
-                Logger.Log($"[KES] Dodata '{link}' - {slika.VelicinaUBajtovima} B (ukupno: {_trenutnaVelicina}/{LimitUBajtovima} B)");
-            }
-            finally
-            {
-                kesLock.ExitWriteLock();
+                // Konačno dodavanje
+                if (kes.TryAdd(link, slika))
+                {
+                    _trenutnaVelicina += slika.VelicinaUBajtovima;
+                }
             }
         }
 
@@ -73,36 +48,8 @@ namespace Projekat
         {
             get
             {
-                kesLock.EnterReadLock();
-                try
-                {
-                    if (kes.TryGetValue(link, out Slika? slika))
-                    {
-                        return slika;
-                    }
-                    return null;
-                }
-                finally
-                {
-                    kesLock.ExitReadLock();
-                }
-            }
-        }
-
-        public void ObrisiStavku(string link)
-        {
-            kesLock.EnterWriteLock();
-            try
-            {
-                if (kes.Remove(link, out Slika? obrisana))
-                {
-                    _trenutnaVelicina -= obrisana.VelicinaUBajtovima;
-                    Logger.Log($"[KES] Obrisana '{link}' - {obrisana.VelicinaUBajtovima} B");
-                }
-            }
-            finally
-            {
-                kesLock.ExitWriteLock();
+                kes.TryGetValue(link, out Slika? slika);
+                return slika;
             }
         }
     }

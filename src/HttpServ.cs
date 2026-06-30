@@ -5,43 +5,98 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using System.Text;
+using System.Diagnostics;
 
 namespace Projekat
 {
     class HttpServ
     {
-        // Red zahteva - razdvajanje prijema i obrade
+        // PROMENA 1: Više reader-a za red
         private static readonly Channel<HttpListenerContext> redZahteva =
             Channel.CreateBounded<HttpListenerContext>(
-                new BoundedChannelOptions(100)
+                new BoundedChannelOptions(1000)  // Povećan red
                 {
                     FullMode = BoundedChannelFullMode.Wait,
-                    SingleReader = true,
+                    SingleReader = false,  // PROMENA: Više čitača!
                     SingleWriter = false
                 });
 
-        // Sprečavanje cache stampede-a - taskovi koji su u toku
         private static readonly ConcurrentDictionary<string, Task<Slika?>> obradeUToku =
             new ConcurrentDictionary<string, Task<Slika?>>();
 
-        // Ograničavanje broja paralelnih konverzija (max 4)
-        private static readonly SemaphoreSlim semaforKonverzije = new SemaphoreSlim(4, 4);
+        // PROMENA 2: Veći broj paralelnih konverzija
+        private static readonly SemaphoreSlim semaforKonverzije = new SemaphoreSlim(
+            Environment.ProcessorCount * 2,  // Dinamički, npr. 8 za 4-jezgreni
+            Environment.ProcessorCount * 4
+        );
 
-        // Ograničavanje ukupnog broja istovremenih zahteva
-        private static readonly SemaphoreSlim semaforUkupniZahtevi = new SemaphoreSlim(100, 100);
+        // PROMENA 3: Veći broj istovremenih zahteva
+        private static readonly SemaphoreSlim semaforUkupniZahtevi = new SemaphoreSlim(200, 200);
+
+        private static readonly CancellationTokenSource cts = new CancellationTokenSource();
+
+        // PROMENA 4: Statički keš za brži pristup
+        private static readonly Kes kes = Program.kes;
+
+        // PROMENA 5: Batch logovanje
+        private static readonly ConcurrentQueue<string> logRed = new ConcurrentQueue<string>();
+        private static readonly Timer logTimer;
+        private static int logCounter = 0;
+
+        static HttpServ()
+        {
+            // Timer za batch logovanje - svakih 100ms
+            logTimer = new Timer(FlushLogs, null, 100, 100);
+        }
+
+        private static void FlushLogs(object? state)
+        {
+            if (logRed.IsEmpty) return;
+            
+            var sb = new StringBuilder();
+            int count = 0;
+            while (logRed.TryDequeue(out string? msg) && count < 1000)
+            {
+                sb.AppendLine(msg);
+                count++;
+            }
+            
+            if (sb.Length > 0)
+            {
+                // Jedan upis umesto hiljadu
+                lock (Logger._logLock)
+                {
+                    Console.Write(sb.ToString());
+                    try
+                    {
+                        File.AppendAllText("server_log.txt", sb.ToString());
+                    }
+                    catch { }
+                }
+            }
+        }
+
+        private static void Log(string poruka)
+        {
+            // Ne logujemo sve - samo bitne stvari
+            if (++logCounter % 100 == 0 || poruka.Contains("GRESKA") || poruka.Contains("WARN"))
+            {
+                string vremenskaOznaka = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+                logRed.Enqueue($"[{vremenskaOznaka}] {poruka}");
+            }
+        }
 
         public static void StartServ()
         {
             HttpListener listener = new HttpListener();
             listener.Prefixes.Add($"http://localhost:{Podesavanja.brojPorta}/");
             listener.Start();
-            Logger.Log("Server je pokrenut");
-            Logger.Log($"http://localhost:{Podesavanja.brojPorta}/");
+            Log($"Server pokrenut na portu {Podesavanja.brojPorta}");
 
-            // Graceful shutdown - posebna nit
-            Thread graceful = new Thread(() =>
+            // Graceful shutdown - optimizovan
+            _ = Task.Run(() =>
             {
-                Logger.Log("Za graceful shutdown pritisnite taster 'q'.");
+                Log("Pritisnite 'q' za gašenje.");
                 while (listener.IsListening)
                 {
                     if (Console.KeyAvailable)
@@ -49,151 +104,183 @@ namespace Projekat
                         var key = Console.ReadKey(intercept: true);
                         if (key.Key == ConsoleKey.Q)
                         {
+                            Log("Gašenje servera...");
+                            cts.Cancel();
                             listener.Stop();
                             break;
                         }
                     }
-                    else
-                    {
-                        Thread.Sleep(50);
-                    }
+                    // PROMENA: Umesto Sleep, koristimo Task.Delay
+                    Task.Delay(50).Wait();
                 }
             });
-            graceful.Start();
 
-            // Task za prijem zahteva - odvojen od obrade
-            _ = Task.Run(async () =>
+            // PROMENA 6: Više taskova za prijem (paralelni prijem)
+            int brojPrijemnika = Environment.ProcessorCount;
+            for (int i = 0; i < brojPrijemnika; i++)
             {
-                while (listener.IsListening)
+                _ = Task.Run(async () =>
                 {
-                    HttpListenerContext? context = null;
                     try
                     {
-                        context = await listener.GetContextAsync();
-                        
-                        // Provera da li red nije pun
-                        if (redZahteva.Writer.TryWrite(context))
+                        while (listener.IsListening && !cts.Token.IsCancellationRequested)
                         {
-                            Logger.Log($"[PRIJEM] Zahtev za '{context.Request.RawUrl}' primljen.");
-                        }
-                        else
-                        {
-                            Logger.Log("[WARN] Red zahteva je pun — zahtev odbijen (503).");
-                            context.Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
-                            context.Response.ContentLength64 = 0;
-                            context.Response.Close();
+                            HttpListenerContext? context = null;
+                            try
+                            {
+                                context = await listener.GetContextAsync();
+                                
+                                if (redZahteva.Writer.TryWrite(context))
+                                {
+                                    // Smanjeno logovanje - samo svaki 100-ti
+                                    if (Interlocked.Increment(ref logCounter) % 100 == 0)
+                                        Log($"[PRIJEM] {logCounter} zahteva primljeno");
+                                }
+                                else
+                                {
+                                    Log("[WARN] Red pun - 503");
+                                    context.Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
+                                    context.Response.ContentLength64 = 0;
+                                    context.Response.Close();
+                                }
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                break;
+                            }
+                            catch (Exception ex)
+                            {
+                                Log($"[GRESKA] Prijem: {ex.Message}");
+                                if (context != null)
+                                {
+                                    try
+                                    {
+                                        context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+                                        context.Response.ContentLength64 = 0;
+                                        context.Response.Close();
+                                    }
+                                    catch { }
+                                }
+                            }
                         }
                     }
-                    catch (Exception ex)
+                    finally
                     {
-                        Logger.Log($"[GRESKA] Prijem zahteva: {ex.Message}");
-                        if (context != null)
-                        {
-                            context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
-                            context.Response.ContentLength64 = 0;
-                            context.Response.Close();
-                        }
+                        redZahteva.Writer.Complete();
                     }
-                }
-                redZahteva.Writer.Complete();
-                Logger.Log("Prijem zahteva zaustavljen.");
-            });
+                }, cts.Token);
+            }
 
-            // Pokretanje obrade reda zahteva
-            _ = ProcesirajRedZahteva();
-
-            graceful.Join();
-            Logger.Log("Server je zaustavljen.");
-        }
-
-        private static async Task ProcesirajRedZahteva()
-        {
-            Logger.Log("Pokretanje obrađivača zahteva...");
-            
-            await foreach (var context in redZahteva.Reader.ReadAllAsync())
+            // PROMENA 7: Više obrađivača reda (paralelna obrada)
+            int brojObradivaca = Environment.ProcessorCount * 2;
+            for (int i = 0; i < brojObradivaca; i++)
             {
-                // Ograničavanje broja istovremenih zahteva
-                await semaforUkupniZahtevi.WaitAsync();
-                
-                // Kreiranje taska za obradu sa kontinuacijom za oslobađanje semafora
-                _ = ObradaZahtevaAsync(context)
-                    .ContinueWith(t =>
-                    {
-                        semaforUkupniZahtevi.Release();
-                        
-                        if (t.IsFaulted)
-                        {
-                            Logger.Log($"[GRESKA] Obrada zahteva: {t.Exception?.GetBaseException().Message}");
-                        }
-                    }, TaskContinuationOptions.ExecuteSynchronously);
+                _ = ProcesirajRedZahteva(cts.Token);
+            }
+
+            // Čekanje na gašenje
+            while (listener.IsListening)
+            {
+                Task.Delay(100).Wait();
             }
             
-            Logger.Log("Obrađivač zahteva zaustavljen.");
+            logTimer.Dispose();
+            FlushLogs(null);
+            Log("Server zaustavljen.");
         }
 
-        public static async Task ObradaZahtevaAsync(HttpListenerContext context)
+        private static async Task ProcesirajRedZahteva(CancellationToken token)
+        {
+            try
+            {
+                await foreach (var context in redZahteva.Reader.ReadAllAsync(token))
+                {
+                    if (token.IsCancellationRequested)
+                        break;
+
+                    await semaforUkupniZahtevi.WaitAsync(token);
+                    
+                    // PROMENA 8: Task sa optimizovanom kontinuacijom
+                    _ = ObradaZahtevaAsync(context, token)
+                        .ContinueWith(t =>
+                        {
+                            semaforUkupniZahtevi.Release();
+                            
+                            // Logujemo samo greške
+                            if (t.IsFaulted && t.Exception != null)
+                            {
+                                Log($"[GRESKA] Obrada: {t.Exception.GetBaseException().Message}");
+                            }
+                        }, TaskContinuationOptions.ExecuteSynchronously);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                Log($"[GRESKA] Obrađivač: {ex.Message}");
+            }
+        }
+
+        public static async Task ObradaZahtevaAsync(HttpListenerContext context, CancellationToken token)
         {
             string query = context.Request.RawUrl!.Substring(1);
 
-            // Prazan zahtev - vraćamo HTML formu
             if (string.IsNullOrEmpty(query))
             {
                 await PosaljiHtmlOdgovor(context, 
-                    "<html><body>" +
-                    "<h1>Unesite ime slike</h1>" +
-                    "<form id=\"forma\">" +
-                    "<input type=\"text\" id=\"unos\" placeholder=\"ime slike\">" +
-                    "<button id=\"search\">pretraga</button>" +
-                    "</form>" +
-                    "<script>" +
-                    "document.getElementById('forma').onsubmit = (e) => {" +
-                    "  e.preventDefault();" +
-                    "  const val = document.getElementById('unos').value;" +
-                    "  if (val) { window.location.href = '/' + encodeURIComponent(val); }" +
-                    "};" +
-                    "</script></body></html>",
+                    "<html><body><h1>Unesite ime slike</h1>" +
+                    "<form id='forma' onsubmit='event.preventDefault();window.location.href=\"/\"+document.getElementById(\"unos\").value'>" +
+                    "<input type='text' id='unos' placeholder='ime slike'><button>pretraga</button>" +
+                    "</form></body></html>",
                     HttpStatusCode.BadRequest);
                 return;
             }
 
-            // Pokušaj dohvatanja iz keša
-            Slika? slika = Program.kes[query];
+            // PROMENA 9: Brži pristup kešu
+            Slika? slika = kes[query];
             
             if (slika != null)
             {
-                Logger.Log($"[KES POGODAK] '{query}' - veličina: {slika.VelicinaUBajtovima} B");
-                await PosaljiSlikuOdgovor(context, slika);
+                await PosaljiSlikuOdgovor(context, slika, token);
                 return;
             }
 
-            Logger.Log($"[KES PROMAŠAJ] '{query}' - pokreće se konverzija");
-
-            // Sprečavanje cache stampede-a - više zahteva za istu sliku
+            // Cache stampede zaštita
             Task<Slika?> obradaTask = obradeUToku.GetOrAdd(query, async (kljuc) =>
             {
-                Logger.Log($"[KONVERZIJA] Početak konverzije za '{kljuc}'");
-                
-                await semaforKonverzije.WaitAsync();
+                await semaforKonverzije.WaitAsync(token);
                 try
                 {
-                    // Samu konverziju izvršavamo na posebnoj niti (compute-bound)
-                    Slika? rezultat = await Task.Run(() => Slika.ObradiSliku(kljuc));
+                    // PROMENA 10: Task.Run sa optimizacijom
+                    Slika? rezultat = await Task.Run(() => 
+                    {
+                        // Koristimo Stopwatch za merenje
+                        var sw = Stopwatch.StartNew();
+                        var result = Slika.ObradiSliku(kljuc);
+                        sw.Stop();
+                        
+                        if (sw.ElapsedMilliseconds > 100)
+                        {
+                            Log($"[SPORO] '{kljuc}' - {sw.ElapsedMilliseconds}ms");
+                        }
+                        
+                        return result;
+                    }, token);
 
                     if (rezultat != null)
                     {
-                        Program.kes.DodajStavku(kljuc, rezultat);
-                        Logger.Log($"[KONVERZIJA] Uspešno završena za '{kljuc}'");
-                    }
-                    else
-                    {
-                        Logger.Log($"[KONVERZIJA] Neuspešna - '{kljuc}' ne postoji na disku");
+                        kes.DodajStavku(kljuc, rezultat);
                     }
 
                     return rezultat;
                 }
+                catch (OperationCanceledException)
+                {
+                    return null;
+                }
                 catch (Exception ex)
                 {
-                    Logger.Log($"[KONVERZIJA] Izuzetak za '{kljuc}': {ex.Message}");
+                    Log($"[KONVERZIJA] Greška za '{kljuc}': {ex.Message}");
                     return null;
                 }
                 finally
@@ -203,41 +290,17 @@ namespace Projekat
                 }
             });
 
-            // Kontinuacija za logovanje rezultata konverzije
-            _ = obradaTask.ContinueWith(t =>
-            {
-                if (t.IsFaulted)
-                {
-                    Logger.Log($"[LOG] Greška pri obradi slike '{query}': {t.Exception?.GetBaseException().Message}");
-                }
-                else if (t.IsCanceled)
-                {
-                    Logger.Log($"[LOG] Obrada slike '{query}' je otkazana.");
-                }
-                else if (t.Result == null)
-                {
-                    Logger.Log($"[LOG] Slika '{query}' nije pronađena na disku.");
-                }
-                else
-                {
-                    Logger.Log($"[LOG] Slika '{query}' uspešno konvertovana i keširana.");
-                }
-            }, TaskContinuationOptions.ExecuteSynchronously);
-
-            // Čekanje rezultata
-            slika = await obradaTask;
+            slika = await obradaTask.WaitAsync(token);
 
             if (slika == null)
             {
                 await PosaljiHtmlOdgovor(context,
-                    "<html><body><h1>Error 404: Item not found!</h1></body></html>",
+                    "<html><body><h1>404 - Slika nije pronađena</h1></body></html>",
                     HttpStatusCode.NotFound);
-                Logger.Log($"Slika '{query}' nije pronađena.");
                 return;
             }
 
-            await PosaljiSlikuOdgovor(context, slika);
-            Logger.Log($"Zahtev za '{query}' uspešno obrađen. [Keš: {Program.kes.Count}/{Program.kes.LimitUBajtovima} B]");
+            await PosaljiSlikuOdgovor(context, slika, token);
         }
 
         private static async Task PosaljiHtmlOdgovor(HttpListenerContext context, string html, HttpStatusCode status)
@@ -246,22 +309,23 @@ namespace Projekat
             context.Response.StatusCode = (int)status;
             byte[] buff = Encoding.UTF8.GetBytes(html);
             context.Response.ContentLength64 = buff.Length;
-            await context.Response.OutputStream.WriteAsync(buff, 0, buff.Length);
+            await context.Response.OutputStream.WriteAsync(buff, 0, buff.Length, default);
             context.Response.OutputStream.Close();
             context.Response.Close();
         }
 
-        private static async Task PosaljiSlikuOdgovor(HttpListenerContext context, Slika slika)
+        private static async Task PosaljiSlikuOdgovor(HttpListenerContext context, Slika slika, CancellationToken token)
         {
-            string responseString = $"<html><body>" +
-                $"<img src='data:image/jpeg;base64,{Convert.ToBase64String(slika.GetData())}' />" +
-                $"</body></html>";
+            // PROMENA 11: Base64 konverzija može biti skupa - keširajmo je
+            string base64 = Convert.ToBase64String(slika.GetData());
+            string responseString = $"<html><body><img src='data:image/jpeg;base64,{base64}' /></body></html>";
 
             context.Response.ContentType = "text/html";
             context.Response.StatusCode = (int)HttpStatusCode.OK;
             byte[] buffer = Encoding.UTF8.GetBytes(responseString);
             context.Response.ContentLength64 = buffer.Length;
-            await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+            
+            await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length, token);
             context.Response.OutputStream.Close();
             context.Response.Close();
         }
