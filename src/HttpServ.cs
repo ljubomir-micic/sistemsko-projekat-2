@@ -53,37 +53,35 @@ namespace Projekat
             });
             graceful.Start();
 
-            Thread listenerThread = new Thread(() =>
+            _ = Task.Run(async () =>
             {
                 while (listener.IsListening)
                 {
+                    HttpListenerContext? context = null;
+                    
                     try
                     {
-                        HttpListenerContext context = listener.GetContext();
-
-                        if (!redZahteva.Writer.TryWrite(context))
-                        {
+                        context = await listener.GetContextAsync();
+                        await redZahteva.Writer.WriteAsync(context);
+                    }
+                    catch (Exception)
+                    {
+                        if (context != null) {
                             Logger.Log("[WARN] Red zahteva je pun — zahtev odbijen (503).");
                             context.Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
                             context.Response.ContentLength64 = 0;
                             context.Response.Close();
                         }
-                    }
-                    catch (Exception)
-                    {
                         break;
                     }
                 }
                 redZahteva.Writer.Complete();
             });
-            listenerThread.IsBackground = true;
-            listenerThread.Start();
 
             _ = ProcesirajRedZahteva();
 
             graceful.Join();
         }
-
 
         private static async Task ProcesirajRedZahteva()
         {
@@ -95,6 +93,7 @@ namespace Projekat
                 );
             }
         }
+
         public static async Task ObradaZahtevaAsync(HttpListenerContext context)
         {
             string query = context.Request.RawUrl!.Substring(1);
