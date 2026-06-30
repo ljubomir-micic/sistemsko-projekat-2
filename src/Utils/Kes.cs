@@ -1,5 +1,5 @@
-using System.Threading;
 using System.Collections.Concurrent;
+using System.Threading;
 
 namespace Projekat
 {
@@ -7,39 +7,33 @@ namespace Projekat
     {
         public long LimitUBajtovima => Podesavanja.limitKesaUBajtovima;
         
-        // PROMENA: ConcurrentDictionary umesto Dictionary + lock
-        private readonly ConcurrentDictionary<string, Slika> kes = new ConcurrentDictionary<string, Slika>();
+        // ConcurrentDictionary nam daje performanse bez ručnog zaključavanja
+        private readonly ConcurrentDictionary<string, Slika> _kes = new ConcurrentDictionary<string, Slika>();
+        
+        // Koristimo za praćenje redosleda pristupa (LRU pristup)
+        private readonly ConcurrentQueue<string> _redosledKljuceva = new ConcurrentQueue<string>();
         
         private long _trenutnaVelicina = 0;
-        private readonly object _lockVelicina = new object();
 
-        public long Count => _trenutnaVelicina;
+        public long Count => Interlocked.Read(ref _trenutnaVelicina);
 
         public void DodajStavku(string link, Slika slika)
         {
-            // Prvo proverimo da li već postoji
-            if (kes.ContainsKey(link))
-                return;
-
-            // Dodajemo samo ako ima mesta
-            lock (_lockVelicina)
+            if (_kes.TryAdd(link, slika))
             {
-                // Provera da li ima mesta
-                if (_trenutnaVelicina + slika.VelicinaUBajtovima > LimitUBajtovima)
-                {
-                    // Brišemo najveće slike dok ne bude mesta
-                    while (_trenutnaVelicina + slika.VelicinaUBajtovima > LimitUBajtovima)
-                    {
-                        if (!kes.TryRemove(kes.MaxBy(x => x.Value.VelicinaUBajtovima).Key, out Slika? obrisana))
-                            break;
-                        _trenutnaVelicina -= obrisana.VelicinaUBajtovima;
-                    }
-                }
+                Interlocked.Add(ref _trenutnaVelicina, slika.VelicinaUBajtovima);
+                _redosledKljuceva.Enqueue(link);
 
-                // Konačno dodavanje
-                if (kes.TryAdd(link, slika))
+                // Efikasna evikcija (FIFO/LRU princip)
+                while (_trenutnaVelicina > LimitUBajtovima)
                 {
-                    _trenutnaVelicina += slika.VelicinaUBajtovima;
+                    if (_redosledKljuceva.TryDequeue(out string stariLink))
+                    {
+                        if (_kes.TryRemove(stariLink, out Slika obrisana))
+                        {
+                            Interlocked.Add(ref _trenutnaVelicina, -obrisana.VelicinaUBajtovima);
+                        }
+                    }
                 }
             }
         }
@@ -48,8 +42,7 @@ namespace Projekat
         {
             get
             {
-                kes.TryGetValue(link, out Slika? slika);
-                return slika;
+                return _kes.TryGetValue(link, out Slika? slika) ? slika : null;
             }
         }
     }
